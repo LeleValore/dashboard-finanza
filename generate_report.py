@@ -16,6 +16,7 @@ Rilancia lo script quando vuoi dati aggiornati (es. ogni mattina).
 from __future__ import annotations
 
 import argparse
+import base64  # NUOVO: per incorporare salt/iv/ciphertext nell'HTML della password gate
 import datetime
 import difflib
 import html  # NUOVO: per fare l'escape di testo scrappato prima di iniettarlo nell'HTML
@@ -31,6 +32,9 @@ import feedparser
 import requests
 import yfinance as yf
 from bs4 import BeautifulSoup  # NUOVO: parsing HTML per scraping mirato e bank report
+from cryptography.hazmat.primitives import hashes  # NUOVO: cifratura password gate
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 # ----------------------------------------------------------------------
 # CONFIGURAZIONE — modifica qui ticker e fonti di notizie
@@ -200,6 +204,13 @@ SENTIMENT_MODEL = "claude-haiku-4-5-20251001"
 BASE_DIR = Path(__file__).parent
 OUTPUT_FILE = BASE_DIR / "output" / "report.html"
 DAYS_DIR = BASE_DIR / "days"
+
+# NUOVO: se impostata (variabile d'ambiente SITE_PASSWORD), il contenuto del
+# report viene cifrato (AES-GCM, chiave derivata via PBKDF2) e mostrato solo a
+# chi inserisce questa password nella pagina. Senza SITE_PASSWORD il report
+# viene generato in chiaro come prima, con un avviso a console.
+SITE_PASSWORD = os.environ.get("SITE_PASSWORD")
+PBKDF2_ITERATIONS = 250_000
 
 
 # ----------------------------------------------------------------------
@@ -709,6 +720,94 @@ def render_bank_card(item: dict) -> str:  # NUOVO
         </div>"""
 
 
+def encrypt_for_password(plaintext: str, password: str) -> dict:
+    """Cifra plaintext con AES-256-GCM, chiave derivata dalla password via
+    PBKDF2-HMAC-SHA256. Salt/iv/iterazioni cambiano ad ogni run. Il formato
+    (salt, iv, ciphertext in base64 + numero iterazioni) è pensato per essere
+    decifrato lato browser con la Web Crypto API (vedi render_lock_screen)."""
+    salt = os.urandom(16)
+    iv = os.urandom(12)
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=PBKDF2_ITERATIONS)
+    key = kdf.derive(password.encode("utf-8"))
+    ciphertext = AESGCM(key).encrypt(iv, plaintext.encode("utf-8"), None)
+    return {
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "iv": base64.b64encode(iv).decode("ascii"),
+        "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+        "iterations": PBKDF2_ITERATIONS,
+    }
+
+
+def render_lock_screen(wrap_html: str, password: str) -> str:
+    """Avvolge il contenuto del report (già renderizzato in wrap_html) dietro
+    una schermata con password. Il contenuto viene cifrato qui in Python e
+    decifrato solo nel browser, dopo password corretta, con crypto.subtle
+    (PBKDF2 + AES-GCM): senza password l'HTML pubblicato non contiene il
+    report in chiaro, solo testo cifrato."""
+    payload = encrypt_for_password(wrap_html, password)
+    return f"""
+  <div id="lock-screen" class="lock-screen">
+    <form id="lock-form" class="lock-card">
+      <div class="eyebrow">Accesso riservato</div>
+      <h1>Dashboard Finanza</h1>
+      <p class="lock-hint">Inserisci la password per vedere il report.</p>
+      <input type="password" id="lock-password" class="lock-input" autocomplete="current-password" autofocus required>
+      <button type="submit" class="lock-button">Accedi</button>
+      <p id="lock-error" class="lock-error" hidden>Password errata, riprova.</p>
+    </form>
+  </div>
+  <div id="app" hidden></div>
+  <script>
+  (function () {{
+    const SALT_B64 = {json.dumps(payload["salt"])};
+    const IV_B64 = {json.dumps(payload["iv"])};
+    const CIPHERTEXT_B64 = {json.dumps(payload["ciphertext"])};
+    const ITERATIONS = {payload["iterations"]};
+
+    function b64ToBytes(b64) {{
+      return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    }}
+
+    async function decrypt(password) {{
+      const keyMaterial = await crypto.subtle.importKey(
+        "raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]
+      );
+      const key = await crypto.subtle.deriveKey(
+        {{ name: "PBKDF2", salt: b64ToBytes(SALT_B64), iterations: ITERATIONS, hash: "SHA-256" }},
+        keyMaterial,
+        {{ name: "AES-GCM", length: 256 }},
+        false,
+        ["decrypt"]
+      );
+      const plainBuf = await crypto.subtle.decrypt(
+        {{ name: "AES-GCM", iv: b64ToBytes(IV_B64) }},
+        key,
+        b64ToBytes(CIPHERTEXT_B64)
+      );
+      return new TextDecoder().decode(plainBuf);
+    }}
+
+    const form = document.getElementById("lock-form");
+    const errorEl = document.getElementById("lock-error");
+    const lockScreen = document.getElementById("lock-screen");
+    const app = document.getElementById("app");
+
+    form.addEventListener("submit", async (event) => {{
+      event.preventDefault();
+      errorEl.hidden = true;
+      const password = document.getElementById("lock-password").value;
+      try {{
+        app.innerHTML = await decrypt(password);
+        lockScreen.remove();
+        app.hidden = false;
+      }} catch (err) {{
+        errorEl.hidden = false;
+      }}
+    }});
+  }})();
+  </script>"""
+
+
 def render_html(
     indices: list[dict],
     commodities: list[dict],  # NUOVO
@@ -751,6 +850,32 @@ def render_html(
           <ul class="news-list">{items_html}
           </ul>
         </section>"""
+
+    wrap_html = f"""
+  <div class="wrap">
+    <header>
+      <div class="eyebrow">Report giornaliero</div>
+      <h1>Dashboard Finanza</h1>
+      <div class="updated">Aggiornato il {now}</div>
+    </header>
+{high_priority_html}
+{bank_html}
+    <section>
+      <h2>Indici di mercato</h2>
+      <div class="grid">{indices_html}
+      </div>
+    </section>
+
+    <section>
+      <h2>Materie Prime</h2>
+      <div class="grid">{commodities_html}
+      </div>
+    </section>
+{news_sections_html}
+    <footer>Generato localmente da generate_report.py &middot; dati indici/materie prime via Yahoo Finance, notizie via RSS e scraping mirato &middot; storico giornaliero in days/</footer>
+  </div>"""
+
+    body_html = render_lock_screen(wrap_html, SITE_PASSWORD) if SITE_PASSWORD else wrap_html
 
     return f"""<!doctype html>
 <html lang="it">
@@ -910,31 +1035,52 @@ def render_html(
     border-top: 1px solid var(--border);
     text-align: center;
   }}
+  .lock-screen {{
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }}
+  .lock-card {{
+    width: 100%;
+    max-width: 320px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.75rem 1.5rem;
+    box-shadow: var(--shadow);
+    text-align: center;
+  }}
+  .lock-card h1 {{ font-size: 1.3rem; margin: 0 0 0.6rem; }}
+  .lock-hint {{ color: var(--muted); font-size: 0.88rem; margin: 0 0 1.2rem; }}
+  .lock-input {{
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.95rem;
+    margin-bottom: 0.9rem;
+  }}
+  .lock-button {{
+    width: 100%;
+    padding: 0.65rem 0.75rem;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+  }}
+  .lock-button:hover {{ opacity: 0.9; }}
+  .lock-error {{ color: var(--negative-text); font-size: 0.85rem; margin: 0.9rem 0 0; }}
 </style>
 </head>
 <body>
-  <div class="wrap">
-    <header>
-      <div class="eyebrow">Report giornaliero</div>
-      <h1>Dashboard Finanza</h1>
-      <div class="updated">Aggiornato il {now}</div>
-    </header>
-{high_priority_html}
-{bank_html}
-    <section>
-      <h2>Indici di mercato</h2>
-      <div class="grid">{indices_html}
-      </div>
-    </section>
-
-    <section>
-      <h2>Materie Prime</h2>
-      <div class="grid">{commodities_html}
-      </div>
-    </section>
-{news_sections_html}
-    <footer>Generato localmente da generate_report.py &middot; dati indici/materie prime via Yahoo Finance, notizie via RSS e scraping mirato &middot; storico giornaliero in days/</footer>
-  </div>
+{body_html}
 </body>
 </html>"""
 
@@ -993,6 +1139,10 @@ def main():
     print(f"      {len(bank_reports)}/{len(BANK_SOURCES)} banche disponibili")
 
     print("[6/6] Genero report e storico...")
+    if SITE_PASSWORD:
+        print("      🔒 Report protetto da password (SITE_PASSWORD impostata)")
+    else:
+        print("      ⚠️  SITE_PASSWORD non impostata: il report NON è protetto da password")
     html_output = render_html(indices, commodities, news, high_priority, bank_reports)
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(html_output, encoding="utf-8")

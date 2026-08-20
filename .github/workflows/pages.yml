@@ -30,6 +30,7 @@ jobs:
       - name: Genera report
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
         run: python3 generate_report.py --no-browser
 
       - name: Prepara pagina per GitHub Pages
