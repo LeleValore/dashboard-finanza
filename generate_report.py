@@ -36,6 +36,8 @@ from cryptography.hazmat.primitives import hashes  # NUOVO: cifratura password g
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+import knowledge_base  # NUOVO: ingestion PDF dei Giganti per l'assistente locale
+
 # ----------------------------------------------------------------------
 # CONFIGURAZIONE — modifica qui ticker e fonti di notizie
 # ----------------------------------------------------------------------
@@ -64,6 +66,16 @@ COMMODITIES = {
     "Caffè": "KC=F",
     "Petrolio (WTI)": "CL=F",
     "Grano": "ZW=F",
+}
+
+# NUOVO: principali criptovalute seguite, ticker Yahoo Finance.
+DIGITAL_ASSETS = {
+    "Bitcoin": "BTC-USD",
+    "Ethereum": "ETH-USD",
+    "Ripple (XRP)": "XRP-USD",
+    "Solana": "SOL-USD",
+    "BNB": "BNB-USD",
+    "Cardano": "ADA-USD",
 }
 
 NEWS_FEEDS = {
@@ -136,14 +148,12 @@ SCRAPING_HEADERS = {
 BANK_SOURCES = {
     "BlackRock": "https://www.blackrock.com/us/individual/insights/blackrock-investment-institute/weekly-commentary",
     "JP Morgan": "https://www.jpmorgan.com/insights/global-research/outlook/market-outlook",
-    "Citi": "https://www.citigroup.com/global/insights/citi-institute",
     "Morgan Stanley": "https://www.morganstanley.com/insights",
     "Goldman Sachs": "https://www.goldmansachs.com/insights/",
-    "Bank of America": "https://newsroom.bankofamerica.com/",
-    "Wells Fargo": "https://www.wellsfargo.com/cib/insights/",
-    "HSBC": "https://www.business.hsbc.com/en-gb/insights",
     "UBS": "https://www.ubs.com/global/en/wealth-management/insights.html",
     "Citadel": "https://www.citadel.com/news/",
+    "Berkshire Hathaway": "https://www.berkshirehathaway.com/letters/letters.html",
+    "Ripple": "https://ripple.com/insights/",
 }
 BANK_TEXT_MAX_CHARS = 2500
 
@@ -593,6 +603,7 @@ def _format_quote_line(q: dict) -> str:
 def save_history(
     indices: list[dict],
     commodities: list[dict],  # NUOVO
+    digital_assets: list[dict],  # NUOVO
     news: dict,
     high_priority: list[dict],
     bank_reports: list[dict],  # NUOVO
@@ -623,20 +634,18 @@ def save_history(
         lines.append(_format_quote_line(c))
     lines.append("")
 
+    lines.append("DIGITAL ASSET")  # NUOVO
+    lines.append("-" * 13)
+    for d in digital_assets:
+        lines.append(_format_quote_line(d))
+    lines.append("")
+
     if bank_reports:  # NUOVO
-        lines.append("BANK REPORT")
-        lines.append("-" * 11)
+        lines.append("GIGANTI")
+        lines.append("-" * 7)
         for b in bank_reports:
             lines.append(f"  - [{b['bank']}] {b['summary']}")
             lines.append(f"    {b['link']}")
-        lines.append("")
-
-    if high_priority:
-        lines.append("ALTA PRIORITÀ")
-        lines.append("-" * 13)
-        for item in high_priority:
-            lines.append(f"  - [{item['source']}] ({item['relevance_score']}) {item['title']}")
-            lines.append(f"    {item['link']}")
         lines.append("")
 
     for category, items in news.items():
@@ -656,6 +665,7 @@ def save_history(
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "indices": [{k: v for k, v in idx.items()} for idx in indices],
         "commodities": [{k: v for k, v in c.items()} for c in commodities],  # NUOVO
+        "digital_assets": [{k: v for k, v in d.items()} for d in digital_assets],  # NUOVO
         "news": news,
         "high_priority": high_priority,
         "bank_report": bank_reports,  # NUOVO
@@ -695,10 +705,8 @@ SENTIMENT_LABELS = {
 }
 
 
-def render_news_item(item: dict, show_priority_badge: bool = False) -> str:
+def render_news_item(item: dict) -> str:
     badges = ""
-    if show_priority_badge and item.get("relevance_score"):
-        badges += f'<span class="badge badge-priority">rilevanza {item["relevance_score"]}</span>'
     sentiment = item.get("sentiment")
     if sentiment in SENTIMENT_LABELS:
         css_class, label = SENTIMENT_LABELS[sentiment]
@@ -811,32 +819,38 @@ def render_lock_screen(wrap_html: str, password: str) -> str:
 def render_html(
     indices: list[dict],
     commodities: list[dict],  # NUOVO
+    digital_assets: list[dict],  # NUOVO
     news: dict,
     high_priority: list[dict],
     bank_reports: list[dict],  # NUOVO
+    search_index: list[dict],  # NUOVO
 ) -> str:
     now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
     indices_html = "\n".join(render_index_card(i) for i in indices)
     commodities_html = "\n".join(render_index_card(c) for c in commodities)  # NUOVO
-
-    high_priority_html = ""
-    if high_priority:
-        items_html = "\n".join(render_news_item(i, show_priority_badge=True) for i in high_priority)
-        high_priority_html = f"""
-        <section class="news-section news-section-priority">
-          <h2>⚡ Alta priorità</h2>
-          <ul class="news-list">{items_html}
-          </ul>
-        </section>"""
+    digital_assets_html = "\n".join(render_index_card(d) for d in digital_assets)  # NUOVO
 
     bank_html = ""  # NUOVO
     if bank_reports:
         cards_html = "\n".join(render_bank_card(b) for b in bank_reports)
         bank_html = f"""
     <section>
-      <h2>🏦 Bank Report</h2>
+      <h2>🏦 Giganti</h2>
       <div class="bank-grid">{cards_html}
       </div>
+    </section>"""
+
+    search_index_json = json.dumps(search_index, ensure_ascii=False)
+    search_html = f"""
+    <section>
+      <h2>🔍 Ricerca Giganti</h2>
+      <p class="search-hint">Cerca per parola chiave nei bank report PDF catalogati nella knowledge base locale (nessuna API, ricerca nel browser).</p>
+      <form id="giganti-search-form" class="search-form">
+        <input type="text" id="giganti-search-query" class="search-input" placeholder="Es. tassi, inflazione, Goldman Sachs…" autocomplete="off">
+        <button type="submit" class="search-button">Cerca</button>
+      </form>
+      <div id="giganti-search-results" class="search-results"></div>
+      <script type="application/json" id="giganti-search-data">{search_index_json}</script>
     </section>"""
 
     news_sections_html = ""
@@ -858,8 +872,6 @@ def render_html(
       <h1>Dashboard Finanza</h1>
       <div class="updated">Aggiornato il {now}</div>
     </header>
-{high_priority_html}
-{bank_html}
     <section>
       <h2>Indici di mercato</h2>
       <div class="grid">{indices_html}
@@ -871,8 +883,16 @@ def render_html(
       <div class="grid">{commodities_html}
       </div>
     </section>
+
+    <section>
+      <h2>Digital Asset</h2>
+      <div class="grid">{digital_assets_html}
+      </div>
+    </section>
+{bank_html}
+{search_html}
 {news_sections_html}
-    <footer>Generato localmente da generate_report.py &middot; dati indici/materie prime via Yahoo Finance, notizie via RSS e scraping mirato &middot; storico giornaliero in days/</footer>
+    <footer>Generato localmente da generate_report.py &middot; dati indici/materie prime/digital asset via Yahoo Finance, notizie via RSS e scraping mirato &middot; storico giornaliero in days/</footer>
   </div>"""
 
     body_html = render_lock_screen(wrap_html, SITE_PASSWORD) if SITE_PASSWORD else wrap_html
@@ -894,8 +914,6 @@ def render_html(
     --down: #dc2626;
     --accent: #2563eb;
     --accent-soft: #eef3ff;
-    --priority: #d97706;
-    --priority-bg: #fef3c7;
     --positive-bg: #dcfce7;
     --positive-text: #15803d;
     --negative-bg: #fee2e2;
@@ -916,8 +934,6 @@ def render_html(
       --down: #f87171;
       --accent: #60a5fa;
       --accent-soft: #1c2433;
-      --priority: #fbbf24;
-      --priority-bg: #3f2f0f;
       --positive-bg: #14321f;
       --positive-text: #4ade80;
       --negative-bg: #3a1a1a;
@@ -1015,7 +1031,6 @@ def render_html(
   .news-list a:hover {{ color: var(--accent); text-decoration: underline; }}
   .news-meta {{ display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }}
   .news-source {{ color: var(--muted); font-size: 0.78rem; }}
-  .news-section-priority h2 {{ color: var(--priority); border-color: var(--priority); }}
   .badge {{
     font-size: 0.7rem;
     font-weight: 700;
@@ -1023,7 +1038,6 @@ def render_html(
     border-radius: 999px;
     letter-spacing: 0.01em;
   }}
-  .badge-priority {{ background: var(--priority-bg); color: var(--priority); }}
   .badge-positive {{ background: var(--positive-bg); color: var(--positive-text); }}
   .badge-negative {{ background: var(--negative-bg); color: var(--negative-text); }}
   .badge-neutral {{ background: var(--neutral-bg); color: var(--neutral-text); }}
@@ -1077,10 +1091,140 @@ def render_html(
   }}
   .lock-button:hover {{ opacity: 0.9; }}
   .lock-error {{ color: var(--negative-text); font-size: 0.85rem; margin: 0.9rem 0 0; }}
+  .search-hint {{ color: var(--muted); font-size: 0.85rem; margin: 0 0 0.9rem; }}
+  .search-form {{ display: flex; gap: 0.6rem; margin-bottom: 1rem; }}
+  .search-input {{
+    flex: 1;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card-bg);
+    color: var(--text);
+    font-size: 0.92rem;
+    font-family: inherit;
+  }}
+  .search-button {{
+    padding: 0.6rem 1.1rem;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.92rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }}
+  .search-button:hover {{ opacity: 0.9; }}
+  .search-results {{ font-size: 0.92rem; }}
+  .search-results-empty {{ color: var(--muted); }}
+  .search-result {{
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.9rem 1.1rem;
+    margin-bottom: 0.7rem;
+  }}
+  .search-result-meta {{ font-weight: 700; margin-bottom: 0.4rem; }}
+  .search-result-meta .search-result-date {{ color: var(--muted); font-weight: 500; font-size: 0.82rem; margin-left: 0.4rem; }}
+  .search-result-excerpt {{ color: var(--text); line-height: 1.5; margin: 0 0 0.5rem; }}
+  .search-result-excerpt mark {{ background: var(--priority-bg, var(--accent-soft)); color: inherit; border-radius: 3px; }}
+  .search-result-link {{ font-size: 0.82rem; color: var(--accent); text-decoration: none; font-weight: 600; }}
+  .search-result-link:hover {{ text-decoration: underline; }}
 </style>
 </head>
 <body>
 {body_html}
+<script>
+(function () {{
+  function getIndex() {{
+    const dataEl = document.getElementById("giganti-search-data");
+    if (!dataEl) return [];
+    try {{
+      return JSON.parse(dataEl.textContent || "[]");
+    }} catch (err) {{
+      return [];
+    }}
+  }}
+
+  function buildExcerpt(text, terms) {{
+    const lower = text.toLowerCase();
+    let matchAt = -1;
+    for (const term of terms) {{
+      const idx = lower.indexOf(term);
+      if (idx !== -1 && (matchAt === -1 || idx < matchAt)) matchAt = idx;
+    }}
+    const start = Math.max(0, (matchAt === -1 ? 0 : matchAt) - 120);
+    const end = Math.min(text.length, start + 320);
+    let excerpt = (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : "");
+    terms.forEach(function (term) {{
+      const re = new RegExp("(" + term.replace(/[.*+?^${{}}()|[\\]\\\\]/g, "\\\\$&") + ")", "gi");
+      excerpt = excerpt.replace(re, "<mark>$1</mark>");
+    }});
+    return excerpt;
+  }}
+
+  function escapeHtml(str) {{
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+  }}
+
+  function renderResults(container, docs, terms) {{
+    if (!docs.length) {{
+      container.innerHTML = '<p class="search-results-empty">Nessun risultato per questa ricerca.</p>';
+      return;
+    }}
+    container.innerHTML = docs.map(function (doc) {{
+      const excerptHtml = buildExcerpt(doc.text || "", terms);
+      return (
+        '<div class="search-result">' +
+        '<div class="search-result-meta">' + escapeHtml(doc.bank) +
+        '<span class="search-result-date">' + escapeHtml(doc.date || "") + "</span></div>" +
+        '<p class="search-result-excerpt">' + excerptHtml + "</p>" +
+        '<a class="search-result-link" href="' + encodeURI(doc.url) + '" target="_blank" rel="noopener noreferrer">Fonte →</a>' +
+        "</div>"
+      );
+    }}).join("");
+  }}
+
+  document.addEventListener("submit", function (event) {{
+    if (!event.target || event.target.id !== "giganti-search-form") return;
+    event.preventDefault();
+
+    const queryEl = document.getElementById("giganti-search-query");
+    const resultsEl = document.getElementById("giganti-search-results");
+    const query = (queryEl.value || "").trim().toLowerCase();
+    if (!resultsEl) return;
+
+    const terms = query.split(/\s+/).filter(function (t) {{ return t.length > 1; }});
+    if (!terms.length) {{
+      resultsEl.innerHTML = '<p class="search-results-empty">Scrivi almeno una parola da cercare.</p>';
+      return;
+    }}
+
+    const index = getIndex();
+    if (!index.length) {{
+      resultsEl.innerHTML = '<p class="search-results-empty">Nessun bank report catalogato ancora nella knowledge base.</p>';
+      return;
+    }}
+
+    const scored = index
+      .map(function (doc) {{
+        const haystack = ((doc.title || "") + " " + (doc.text || "")).toLowerCase();
+        const score = terms.reduce(function (acc, term) {{
+          return acc + haystack.split(term).length - 1;
+        }}, 0);
+        return {{ doc: doc, score: score }};
+      }})
+      .filter(function (entry) {{ return entry.score > 0; }})
+      .sort(function (a, b) {{ return b.score - a.score; }})
+      .slice(0, 8)
+      .map(function (entry) {{ return entry.doc; }});
+
+    renderResults(resultsEl, scored, terms);
+  }});
+}})();
+</script>
 </body>
 </html>"""
 
@@ -1091,7 +1235,7 @@ def render_html(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Genera la Dashboard Finanza (indici, materie prime, notizie, bank report)."
+        description="Genera la Dashboard Finanza (indici, materie prime, digital asset, notizie, Giganti)."
     )
     parser.add_argument(
         "--no-browser",
@@ -1107,54 +1251,65 @@ def main():
     print("Dashboard Finanza")
     print("-" * 40)
 
-    print("[1/6] Scarico indici di mercato e materie prime...")
+    print("[1/7] Scarico indici di mercato, materie prime e digital asset...")
     indices = fetch_quotes(INDICES)
     commodities = fetch_quotes(COMMODITIES)
+    digital_assets = fetch_quotes(DIGITAL_ASSETS)  # NUOVO
     ok_indices = sum(1 for i in indices if not i["error"])
     ok_commodities = sum(1 for c in commodities if not c["error"])
-    print(f"      {ok_indices}/{len(indices)} indici, {ok_commodities}/{len(commodities)} materie prime aggiornate")
+    ok_digital_assets = sum(1 for d in digital_assets if not d["error"])
+    print(
+        f"      {ok_indices}/{len(indices)} indici, {ok_commodities}/{len(commodities)} materie prime, "
+        f"{ok_digital_assets}/{len(digital_assets)} digital asset aggiornati"
+    )
 
-    print("[2/6] Scarico notizie (feed RSS)...")
+    print("[2/7] Scarico notizie (feed RSS)...")
     news_raw = fetch_news()
     total_raw = sum(len(items) for items in news_raw.values())
     for category, items in news_raw.items():
         print(f"      {category}: {len(items)} notizie")
 
-    print("[3/6] Scraping mirato (TradingView, Myfxbook)...")
+    print("[3/7] Scraping mirato (TradingView, Myfxbook)...")
     scraped_items = fetch_scraped_news()
     if scraped_items:
         news_raw.setdefault(SCRAPED_NEWS_CATEGORY, []).extend(scraped_items)
     total_raw += len(scraped_items)
     print(f"      {len(scraped_items)} elementi da scraping mirato")
 
-    print("[4/6] Deduplico, calcolo rilevanza e sentiment...")
+    print("[4/7] Deduplico, calcolo rilevanza e sentiment...")
     news, high_priority = process_news(news_raw)
     total_news = sum(len(items) for items in news.values())
     duplicates_removed = total_raw - total_news
     print(f"      {total_news} notizie uniche ({duplicates_removed} duplicati rimossi)")
     print(f"      {len(high_priority)} notizie ad alta priorità")
 
-    print("[5/6] Bank Report: scraping e riassunto operativo...")
+    print("[5/7] Giganti: scraping e riassunto operativo...")
     bank_reports = build_bank_reports()
     print(f"      {len(bank_reports)}/{len(BANK_SOURCES)} banche disponibili")
 
-    print("[6/6] Genero report e storico...")
+    print("[6/7] Knowledge base: scraping nuovi PDF dei Giganti...")
+    kb_summary = knowledge_base.ingest_new_reports(BANK_SOURCES)
+    total_new_docs = sum(kb_summary.values())
+    search_index = knowledge_base.build_search_index()
+    print(f"      {total_new_docs} nuovi documenti aggiunti, {len(search_index)} nell'indice di ricerca")
+
+    print("[7/7] Genero report e storico...")
     if SITE_PASSWORD:
         print("      🔒 Report protetto da password (SITE_PASSWORD impostata)")
     else:
         print("      ⚠️  SITE_PASSWORD non impostata: il report NON è protetto da password")
-    html_output = render_html(indices, commodities, news, high_priority, bank_reports)
+    html_output = render_html(indices, commodities, digital_assets, news, high_priority, bank_reports, search_index)
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(html_output, encoding="utf-8")
-    txt_file, json_file = save_history(indices, commodities, news, high_priority, bank_reports)
+    txt_file, json_file = save_history(indices, commodities, digital_assets, news, high_priority, bank_reports)
 
     print("-" * 40)
     print(f"Report:  {OUTPUT_FILE}")
     print(f"Storico: {txt_file}")
     print(f"         {json_file}")
     print(
-        f"Totale:  {ok_indices} indici, {ok_commodities} materie prime, "
-        f"{total_news} notizie ({len(high_priority)} alta priorità), {len(bank_reports)} bank report"
+        f"Totale:  {ok_indices} indici, {ok_commodities} materie prime, {ok_digital_assets} digital asset, "
+        f"{total_news} notizie ({len(high_priority)} alta priorità), {len(bank_reports)} Giganti"
     )
 
     if not args.no_browser:

@@ -22,4 +22,11 @@ source "$VENV_DIR/bin/activate"
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
+# Carica le variabili da .env se presente (ANTHROPIC_API_KEY, SITE_PASSWORD).
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+fi
+
 python3 generate_report.py "$@"
