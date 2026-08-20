@@ -1,0 +1,5 @@
+yfinance
+feedparser
+requests
+beautifulsoup4
+anthropic  # opzionale: serve solo se ENABLE_SENTIMENT = True in generate_report.py
