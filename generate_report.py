@@ -22,7 +22,7 @@ import difflib
 import html  # NUOVO: per fare l'escape di testo scrappato prima di iniettarlo nell'HTML
 import json
 import os
-import re  # NUOVO: usato per lo scraping mirato (TradingView / Myfxbook)
+import re  # NUOVO: usato per lo scraping mirato del calendario Myfxbook
 import sys
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
@@ -122,12 +122,11 @@ NEWS_FEEDS = {
 # NUOVO: categoria "sintetica" popolata via scraping mirato (non RSS) invece che
 # tramite NEWS_FEEDS, ma con la stessa struttura dati delle altre news così da
 # riusare score_news_item / dedup_news / render_news_item senza modifiche.
-SCRAPED_NEWS_CATEGORY = "Segnali & Calendario"
-TRADINGVIEW_NEWS_URL = "https://www.tradingview.com/news/"
+SCRAPED_NEWS_CATEGORY = "Calendario Economico"
 MYFXBOOK_CALENDAR_URL = "https://www.myfxbook.com/forex-economic-calendar"
 SCRAPING_LIMIT = 8
 
-# NUOVO: header "da browser" usati per lo scraping mirato (TradingView, Myfxbook,
+# NUOVO: header "da browser" usati per lo scraping mirato (Myfxbook,
 # pagine insight delle banche). Alcuni siti rispondono 403 alle richieste con un
 # User-Agent generico; con questi header quasi tutti i target rispondono 200.
 # NOTA: verificare periodicamente Termini di Servizio e robots.txt dei siti scrappati
@@ -298,80 +297,13 @@ def fetch_news() -> dict:
 
 
 # ----------------------------------------------------------------------
-# NUOVO — SCRAPING MIRATO: TRADINGVIEW E MYFXBOOK
+# NUOVO — SCRAPING MIRATO: CALENDARIO ECONOMICO MYFXBOOK
 # ----------------------------------------------------------------------
 
-def _find_news_items(node):
-    """Cerca ricorsivamente, nel JSON embedded di TradingView, la prima lista
-    di notizie (identificata dalla presenza della chiave "storyPath")."""
-    if isinstance(node, dict):
-        items = node.get("items")
-        if isinstance(items, list) and items and isinstance(items[0], dict) and "storyPath" in items[0]:
-            return items
-        for value in node.values():
-            found = _find_news_items(value)
-            if found:
-                return found
-    elif isinstance(node, list):
-        for value in node:
-            found = _find_news_items(value)
-            if found:
-                return found
-    return None
-
-
-def fetch_tradingview_news(limit: int = SCRAPING_LIMIT) -> list[dict]:
-    """Scraping della pagina notizie di TradingView.
-
-    TradingView non ha un'API pubblica per queste notizie: la pagina /news/
-    incorpora però i dati come JSON in un tag <script type="application/
-    prs.init-data+json">, che qui viene individuato e parsato. Non è un
-    contratto stabile: se TradingView cambia struttura, la funzione fallisce
-    in silenzio (solo warning) senza bloccare il resto del report.
-    """
-    try:
-        response = requests.get(TRADINGVIEW_NEWS_URL, headers=SCRAPING_HEADERS, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        scripts = re.findall(
-            r'<script type="application/prs\.init-data\+json">(.*?)</script>',
-            response.text,
-            re.S,
-        )
-        items = None
-        for raw in scripts:
-            if '"storyPath"' not in raw:
-                continue
-            items = _find_news_items(json.loads(raw))
-            if items:
-                break
-        if not items:
-            print("⚠️  TradingView: struttura pagina non riconosciuta, salto lo scraping")
-            return []
-
-        results = []
-        for item in items[:limit]:
-            provider = (item.get("provider") or {}).get("name") or "TradingView"
-            source = "TradingView" if provider == "TradingView" else f"TradingView · {provider}"
-            published_ts = item.get("published")
-            published = (
-                datetime.datetime.fromtimestamp(published_ts).strftime("%Y-%m-%d %H:%M")
-                if published_ts else ""
-            )
-            results.append({
-                "source": source,
-                "title": (item.get("title") or "").strip(),
-                "link": "https://www.tradingview.com" + item.get("storyPath", ""),
-                "published": published,
-            })
-        return results
-    except Exception as exc:
-        print(f"⚠️  TradingView non raggiungibile ({exc}), salto")
-        return []
-
-
 def fetch_myfxbook_calendar(limit: int = SCRAPING_LIMIT) -> list[dict]:
-    """Scraping del calendario economico di Myfxbook (solo eventi impatto
-    medio/alto, per non allagare la sezione con dati a bassa rilevanza).
+    """Scraping del calendario economico di Myfxbook (solo eventi a impatto
+    alto, per tenere la sezione essenziale: solo le news macro che contano
+    davvero).
 
     myfxbook.com/robots.txt non esclude questa pagina, ma resta comunque
     scraping non ufficiale: fallisce in silenzio se il sito cambia struttura
@@ -390,7 +322,7 @@ def fetch_myfxbook_calendar(limit: int = SCRAPING_LIMIT) -> list[dict]:
                 continue
             impact_el = row.select_one("[class*='impact_']")
             impact = impact_el.get_text(strip=True) if impact_el else ""
-            if impact.lower() not in ("medium", "high"):
+            if impact.lower() != "high":
                 continue
             title = link.get_text(strip=True)
             if title.lower().startswith("myfxbook") and "sentiment" in title.lower():
@@ -405,10 +337,10 @@ def fetch_myfxbook_calendar(limit: int = SCRAPING_LIMIT) -> list[dict]:
 
             results.append({
                 "source": "Myfxbook - Calendario economico",
-                "title": f"{label}: {title} — impatto {impact.lower()}",
+                "title": f"{label}: {title} — impatto alto",
                 "link": href if href.startswith("http") else f"https://www.myfxbook.com{href}",
                 "published": "",
-                "force_priority": impact.lower() == "high",
+                "force_priority": True,
             })
             if len(results) >= limit:
                 break
@@ -419,7 +351,7 @@ def fetch_myfxbook_calendar(limit: int = SCRAPING_LIMIT) -> list[dict]:
 
 
 def fetch_scraped_news() -> list[dict]:
-    return fetch_tradingview_news() + fetch_myfxbook_calendar()
+    return fetch_myfxbook_calendar()
 
 
 # ----------------------------------------------------------------------
@@ -1269,12 +1201,12 @@ def main():
     for category, items in news_raw.items():
         print(f"      {category}: {len(items)} notizie")
 
-    print("[3/7] Scraping mirato (TradingView, Myfxbook)...")
+    print("[3/7] Calendario economico (Myfxbook, solo impatto alto)...")
     scraped_items = fetch_scraped_news()
     if scraped_items:
         news_raw.setdefault(SCRAPED_NEWS_CATEGORY, []).extend(scraped_items)
     total_raw += len(scraped_items)
-    print(f"      {len(scraped_items)} elementi da scraping mirato")
+    print(f"      {len(scraped_items)} eventi ad alto impatto")
 
     print("[4/7] Deduplico, calcolo rilevanza e sentiment...")
     news, high_priority = process_news(news_raw)
