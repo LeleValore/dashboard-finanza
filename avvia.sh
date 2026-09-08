@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Avvia la Dashboard Finanza con un solo comando: ./avvia.sh
+# Avvia DisciplinedCapital con un solo comando: ./avvia.sh
 # Crea/aggiorna automaticamente l'ambiente Python la prima volta, poi genera il report.
 set -euo pipefail
 

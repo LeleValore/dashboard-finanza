@@ -552,7 +552,7 @@ def save_history(
     txt_path = DAYS_DIR / f"{today}.txt"
     json_path = DAYS_DIR / f"{today}.json"
 
-    lines = [f"Resoconto Dashboard Finanza — {today}", "=" * 50, ""]
+    lines = [f"Resoconto DisciplinedCapital — {today}", "=" * 50, ""]
 
     lines.append("INDICI DI MERCATO")
     lines.append("-" * 17)
@@ -689,7 +689,7 @@ def render_lock_screen(wrap_html: str, password: str) -> str:
   <div id="lock-screen" class="lock-screen">
     <form id="lock-form" class="lock-card">
       <div class="eyebrow">Accesso riservato</div>
-      <h1>Dashboard Finanza</h1>
+      <h1>DisciplinedCapital</h1>
       <p class="lock-hint">Inserisci la password per vedere il report.</p>
       <input type="password" id="lock-password" class="lock-input" autocomplete="current-password" autofocus required>
       <button type="submit" class="lock-button">Accedi</button>
@@ -801,7 +801,7 @@ def render_html(
   <div class="wrap">
     <header>
       <div class="eyebrow">Report giornaliero</div>
-      <h1>Dashboard Finanza</h1>
+      <h1>DisciplinedCapital</h1>
       <div class="updated">Aggiornato il {now}</div>
     </header>
     <section>
@@ -833,7 +833,7 @@ def render_html(
 <html lang="it">
 <head>
 <meta charset="utf-8">
-<title>Dashboard Finanza</title>
+<title>DisciplinedCapital</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root {{
@@ -1167,7 +1167,7 @@ def render_html(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Genera la Dashboard Finanza (indici, materie prime, digital asset, notizie, Giganti)."
+        description="Genera DisciplinedCapital (indici, materie prime, digital asset, notizie, Giganti)."
     )
     parser.add_argument(
         "--no-browser",
@@ -1180,7 +1180,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    print("Dashboard Finanza")
+    print("DisciplinedCapital")
     print("-" * 40)
 
     print("[1/7] Scarico indici di mercato, materie prime e digital asset...")
