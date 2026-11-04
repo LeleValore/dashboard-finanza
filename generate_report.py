@@ -37,8 +37,10 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 import bank_views
+import growth_screener
 import knowledge_base  # NUOVO: ingestion PDF dei Giganti per l'assistente locale
 import market_history
+import paper_portfolio
 
 # ----------------------------------------------------------------------
 # CONFIGURAZIONE — modifica qui ticker e fonti di notizie
@@ -97,6 +99,19 @@ RISK_INDICATORS = {
     "Investment grade (ETF LQD)": "LQD",
     "Treasury 20+ anni (ETF TLT)": "TLT",
     "Treasury 7-10 anni (ETF IEF)": "IEF",
+}
+
+# Strumenti del portafoglio: gli ETF americani hanno decenni di storia e servono al
+# backtest, quelli UCITS sono gli equivalenti acquistabili da un privato europeo.
+PORTFOLIO_INSTRUMENTS = {
+    "S&P 500 (ETF SPY)": "SPY",
+    "Paesi sviluppati ex USA (ETF EFA)": "EFA",
+    "Mercati emergenti (ETF EEM)": "EEM",
+    "Nasdaq 100 (ETF QQQ)": "QQQ",
+    "Oro (ETF GLD)": "GLD",
+    "Azionario globale (UCITS VWCE)": "VWCE.DE",
+    "Titoli di Stato euro (UCITS EUNH)": "EUNH.DE",
+    "Oro (ETC Xetra-Gold)": "4GLD.DE",
 }
 
 NEWS_FEEDS = {
@@ -176,6 +191,9 @@ BANK_SOURCES = {
     "Ripple": "https://ripple.com/insights/",
 }
 BANK_TEXT_MAX_CHARS = 2500
+
+GROWTH_ROWS = 12
+GROWTH_THEMES = 6
 
 NEWS_PER_FEED = 6
 REQUEST_TIMEOUT = 10
@@ -747,6 +765,81 @@ def render_views_section(consensus: dict) -> str:
     </section>"""
 
 
+def _format_pct(value: float | None) -> str:
+    return "–" if value is None else f"{value * 100:+.0f}%"
+
+
+def render_growth_section(rows: list[dict], report_themes: list[dict]) -> str:
+    """Le migliori aziende per punteggio e i temi d'investimento emersi dai PDF."""
+    if not rows:
+        return ""
+    body = ""
+    for row in rows[:GROWTH_ROWS]:
+        banks = sorted(set(row["banks_company"]) | set(row["banks_theme"]))
+        badge = '<span class="stance positive">Forte crescita</span>' if row["strong_growth"] else ""
+        body += f"""
+          <tr><th scope="row">{html.escape(str(row['name']))} <span class="stance-empty">{html.escape(row['ticker'])}</span></th>
+          <td>{html.escape(row['theme'])}</td><td>{row['score']:.0f}</td>
+          <td>{_format_pct(row['revenue_growth'])}</td><td>{_format_pct(row['earnings_growth'])}</td>
+          <td>{_format_pct(row.get('momentum_6m'))}</td><td>{badge}</td><td>{html.escape(', '.join(banks)) or '–'}</td></tr>"""
+    themes_html = "".join(
+        f"<li><strong>{html.escape(t['theme_it'])}</strong> ({html.escape(t['bank'])}): {html.escape(t['rationale_it'])}</li>"
+        for t in report_themes[:GROWTH_THEMES]
+    )
+    return f"""
+    <section>
+      <h2>🚀 Aziende in forte crescita</h2>
+      <p class="search-hint">Candidate da studiare, non consigli d'acquisto. Punteggio 0-100 su ricavi, utili, margini e momentum a 6 mesi rispetto alle altre aziende seguite. "Report" indica le banche che citano l'azienda o il suo tema.</p>
+      <div class="views-scroll">
+        <table class="views-table">
+          <thead><tr><th>Azienda</th><th>Tema</th><th>Punteggio</th><th>Ricavi</th><th>Utili</th><th>6 mesi</th><th>Segnale</th><th>Report</th></tr></thead>
+          <tbody>{body}
+          </tbody>
+        </table>
+      </div>
+      <ul class="bank-risks">{themes_html}</ul>
+    </section>"""
+
+
+def render_paper_section(summary: dict | None) -> str:
+    """Valore del portafoglio virtuale, posizioni e ultime operazioni."""
+    if summary is None:
+        return ""
+    gain = summary["value"] / paper_portfolio.STARTING_CAPITAL - 1
+    benchmark_gain = summary["benchmark"] / paper_portfolio.STARTING_CAPITAL - 1
+    positions = "".join(
+        f"<tr><th scope=\"row\">{html.escape(p['ticker'])}</th><td>{p['value']:.2f} €</td><td>{p['weight'] * 100:.1f}%</td></tr>"
+        for p in summary["positions"]
+    )
+    trades = "".join(
+        f"<tr><th scope=\"row\">{html.escape(t['date'])}</th><td>{'Acquisto' if t['side'] == 'buy' else 'Vendita'} {html.escape(t['ticker'])}</td>"
+        f"<td>{float(t['amount_eur']):.2f} €</td><td>{html.escape(t['reason'])}</td></tr>"
+        for t in summary["trades"]
+    )
+    return f"""
+    <section>
+      <h2>🧪 Portafoglio virtuale</h2>
+      <p class="search-hint">Simulazione con denaro fittizio dal {html.escape(summary['started'])}: nessun ordine reale. Commissioni simulate finora: {summary['commissions']:.2f} €. Tasse non incluse.</p>
+      <div class="grid">
+        <div class="card"><div class="card-name">Valore</div><div class="card-price">{summary['value']:.2f} €</div><div class="card-change">{gain * 100:+.2f}%</div></div>
+        <div class="card"><div class="card-name">Azionario globale (confronto)</div><div class="card-price">{summary['benchmark']:.2f} €</div><div class="card-change">{benchmark_gain * 100:+.2f}%</div></div>
+        <div class="card"><div class="card-name">Liquidità</div><div class="card-price">{summary['cash']:.2f} €</div></div>
+      </div>
+      <div class="views-scroll">
+        <table class="views-table">
+          <thead><tr><th>Posizione</th><th>Valore</th><th>Peso</th></tr></thead>
+          <tbody>{positions}</tbody>
+        </table>
+      </div>
+      <div class="views-scroll">
+        <table class="views-table">
+          <thead><tr><th>Data</th><th>Operazione</th><th>Importo</th><th>Motivo</th></tr></thead>
+          <tbody>{trades}</tbody>
+        </table>
+      </div>
+    </section>"""
+
+
 def encrypt_for_password(plaintext: str, password: str) -> dict:
     """Cifra plaintext con AES-256-GCM, chiave derivata dalla password via
     PBKDF2-HMAC-SHA256. Salt/iv/iterazioni cambiano ad ogni run. Il formato
@@ -844,6 +937,8 @@ def render_html(
     bank_reports: list[dict],  # NUOVO
     search_index: list[dict],  # NUOVO
     consensus: dict,
+    growth_rows: list[dict],
+    paper_summary: dict | None,
 ) -> str:
     now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
     indices_html = "\n".join(render_index_card(i) for i in indices)
@@ -861,6 +956,8 @@ def render_html(
     </section>"""
 
     views_html = render_views_section(consensus)
+    growth_html = render_growth_section(growth_rows, consensus["themes"])
+    paper_html = render_paper_section(paper_summary)
 
     search_index_json = json.dumps(search_index, ensure_ascii=False).replace("</", "<\\/")
     search_html = f"""
@@ -911,6 +1008,8 @@ def render_html(
       <div class="grid">{digital_assets_html}
       </div>
     </section>
+{paper_html}
+{growth_html}
 {views_html}
 {bank_html}
 {search_html}
@@ -1287,7 +1386,7 @@ def main():
     print("DisciplinedCapital")
     print("-" * 40)
 
-    print("[1/9] Scarico indici di mercato, materie prime e digital asset...")
+    print("[1/11] Scarico indici di mercato, materie prime e digital asset...")
     indices = fetch_quotes(INDICES)
     commodities = fetch_quotes(COMMODITIES)
     digital_assets = fetch_quotes(DIGITAL_ASSETS)  # NUOVO
@@ -1299,54 +1398,67 @@ def main():
         f"{ok_digital_assets}/{len(digital_assets)} digital asset aggiornati"
     )
 
-    print("[2/9] Scarico notizie (feed RSS)...")
+    print("[2/11] Scarico notizie (feed RSS)...")
     news_raw = fetch_news()
     total_raw = sum(len(items) for items in news_raw.values())
     for category, items in news_raw.items():
         print(f"      {category}: {len(items)} notizie")
 
-    print("[3/9] Calendario economico (Myfxbook, solo impatto alto)...")
+    print("[3/11] Calendario economico (Myfxbook, solo impatto alto)...")
     scraped_items = fetch_scraped_news()
     if scraped_items:
         news_raw.setdefault(SCRAPED_NEWS_CATEGORY, []).extend(scraped_items)
     total_raw += len(scraped_items)
     print(f"      {len(scraped_items)} eventi ad alto impatto")
 
-    print("[4/9] Deduplico, calcolo rilevanza e sentiment...")
+    print("[4/11] Deduplico, calcolo rilevanza e sentiment...")
     news, high_priority = process_news(news_raw)
     total_news = sum(len(items) for items in news.values())
     duplicates_removed = total_raw - total_news
     print(f"      {total_news} notizie uniche ({duplicates_removed} duplicati rimossi)")
     print(f"      {len(high_priority)} notizie ad alta priorità")
 
-    print("[5/9] Giganti: scraping e riassunto operativo...")
+    print("[5/11] Giganti: scraping e riassunto operativo...")
     bank_reports = build_bank_reports()
     print(f"      {len(bank_reports)}/{len(BANK_SOURCES)} banche disponibili")
 
-    print("[6/9] Knowledge base: scraping nuovi PDF dei Giganti...")
+    print("[6/11] Knowledge base: scraping nuovi PDF dei Giganti...")
     kb_summary = knowledge_base.ingest_new_reports(BANK_SOURCES)
     total_new_docs = sum(kb_summary.values())
     search_index = knowledge_base.build_search_index()
     print(f"      {total_new_docs} nuovi documenti aggiunti, {len(search_index)} nell'indice di ricerca")
 
-    print("[7/9] Analisi strutturata dei PDF...")
+    print("[7/11] Analisi strutturata dei PDF...")
     analyzed = bank_views.analyze_pending_documents()
     view_rows = bank_views.export_views_csv()
     consensus = bank_views.build_consensus()
     print(f"      {analyzed} documenti analizzati, {view_rows} view nello storico")
 
-    print("[8/9] Storico prezzi e indicatori di rischio...")
-    tracked = {**INDICES, **COMMODITIES, **DIGITAL_ASSETS, **RISK_INDICATORS}
+    print("[8/11] Storico prezzi e indicatori di rischio...")
+    tracked = {**INDICES, **COMMODITIES, **DIGITAL_ASSETS, **RISK_INDICATORS, **PORTFOLIO_INSTRUMENTS,
+               **growth_screener.tracked_companies()}
     saved_tickers = market_history.update_price_history(tracked)
     print(f"      {saved_tickers}/{len(tracked)} ticker aggiornati")
 
-    print("[9/9] Genero report e storico...")
+    print("[9/11] Aziende in forte crescita...")
+    documents = [d for d in knowledge_base.load_all_documents() if d.get("bank") not in bank_views.SKIP_ANALYSIS_BANKS]
+    growth_rows = growth_screener.screen_companies(consensus["themes"], documents)
+    growth_screener.save_snapshot(growth_rows)
+    print(f"      {len(growth_rows)} aziende valutate, {sum(1 for r in growth_rows if r['strong_growth'])} in forte crescita")
+
+    print("[10/11] Portafoglio virtuale...")
+    paper_summary = paper_portfolio.update_portfolio(growth_rows)
+    if paper_summary:
+        print(f"      valore {paper_summary['value']:.2f} €, confronto {paper_summary['benchmark']:.2f} €")
+
+    print("[11/11] Genero report e storico...")
     if SITE_PASSWORD:
         print("      🔒 Report protetto da password (SITE_PASSWORD impostata)")
     else:
         print("      ⚠️  SITE_PASSWORD non impostata: il report NON è protetto da password")
     html_output = render_html(
-        indices, commodities, digital_assets, news, high_priority, bank_reports, search_index, consensus
+        indices, commodities, digital_assets, news, high_priority, bank_reports, search_index, consensus,
+        growth_rows, paper_summary,
     )
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(html_output, encoding="utf-8")

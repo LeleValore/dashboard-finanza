@@ -33,7 +33,7 @@ def _save_one_ticker(name: str, ticker: str) -> bool:
         if hist.empty:
             print(f"⚠️  {name} ({ticker}): storico vuoto, tengo il CSV precedente")
             return False
-        hist = hist[[c for c in PRICE_COLUMNS if c in hist.columns]].round(6)
+        hist = hist[[c for c in PRICE_COLUMNS if c in hist.columns]].dropna(subset=["Close"]).round(6)
         hist.index = hist.index.strftime("%Y-%m-%d")
         hist.index.name = "Date"
         hist.to_csv(PRICES_DIR / _ticker_filename(ticker))
