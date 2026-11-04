@@ -20,6 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Scarica lo storico dal repository privato
+        uses: actions/checkout@v4
+        with:
+          repository: LeleValore/dashboard-finanza-data
+          ssh-key: ${{ secrets.DATA_DEPLOY_KEY }}
+          path: data
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -31,7 +38,18 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+          DATA_DIR: data
         run: python3 generate_report.py --no-browser
+
+      - name: Salva lo storico nel repository privato
+        if: always()
+        working-directory: data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "Storico $(date -u +%F)"
+          git push
 
       - name: Prepara pagina per GitHub Pages
         run: |

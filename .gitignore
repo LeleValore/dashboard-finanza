@@ -6,3 +6,5 @@ days/
 knowledge_base/
 .env
 .DS_Store
+data/
+prices/

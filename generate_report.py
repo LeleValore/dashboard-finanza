@@ -36,7 +36,9 @@ from cryptography.hazmat.primitives import hashes  # NUOVO: cifratura password g
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+import bank_views
 import knowledge_base  # NUOVO: ingestion PDF dei Giganti per l'assistente locale
+import market_history
 
 # ----------------------------------------------------------------------
 # CONFIGURAZIONE — modifica qui ticker e fonti di notizie
@@ -76,6 +78,25 @@ DIGITAL_ASSETS = {
     "Solana": "SOL-USD",
     "BNB": "BNB-USD",
     "Cardano": "ADA-USD",
+}
+
+# Indicatori di rischio: non compaiono nel report ma finiscono nello storico prezzi
+# (market_history.py) come variabili per i modelli: volatilità azionaria e
+# obbligazionaria, curva dei tassi USA, dollaro, credito.
+RISK_INDICATORS = {
+    "VIX": "^VIX",
+    "VIX 3 mesi": "^VIX3M",
+    "MOVE": "^MOVE",
+    "Treasury 13 settimane": "^IRX",
+    "Treasury 5 anni": "^FVX",
+    "Treasury 10 anni": "^TNX",
+    "Treasury 30 anni": "^TYX",
+    "Dollar Index": "DX-Y.NYB",
+    "EUR/USD": "EURUSD=X",
+    "High yield (ETF HYG)": "HYG",
+    "Investment grade (ETF LQD)": "LQD",
+    "Treasury 20+ anni (ETF TLT)": "TLT",
+    "Treasury 7-10 anni (ETF IEF)": "IEF",
 }
 
 NEWS_FEEDS = {
@@ -208,11 +229,14 @@ DEDUP_SIMILARITY_THRESHOLD = 0.85
 ENABLE_SENTIMENT = True
 # NUOVO: come sopra, ma per il riassunto operativo dei bank report.
 ENABLE_BANK_SUMMARY = True
-SENTIMENT_MODEL = "claude-haiku-4-5-20251001"
+SENTIMENT_MODEL = "claude-haiku-5-5"
 
 BASE_DIR = Path(__file__).parent
 OUTPUT_FILE = BASE_DIR / "output" / "report.html"
-DAYS_DIR = BASE_DIR / "days"
+# DATA_DIR è la cartella dello storico: su GitHub Actions punta al repository
+# privato dei dati (vedi pages.yml), in locale di default è la cartella del progetto.
+DATA_DIR = Path(os.environ.get("DATA_DIR") or BASE_DIR)
+DAYS_DIR = DATA_DIR / "days"
 
 # NUOVO: se impostata (variabile d'ambiente SITE_PASSWORD), il contenuto del
 # report viene cifrato (AES-GCM, chiave derivata via PBKDF2) e mostrato solo a
@@ -378,6 +402,12 @@ def fetch_bank_page(name: str, url: str) -> dict | None:
         return None
 
 
+def _response_text(response) -> str:
+    """Testo della risposta: il modello può far precedere blocchi di thinking,
+    che contano anche in max_tokens."""
+    return next((b.text for b in response.content if b.type == "text"), "").strip()
+
+
 def summarize_bank_report(bank_name: str, text: str) -> str | None:
     """Chiede all'API Anthropic un riassunto operativo sintetico (2-3 frasi,
     in italiano) del contenuto scrappato dalla pagina insight della banca."""
@@ -390,7 +420,8 @@ def summarize_bank_report(bank_name: str, text: str) -> str | None:
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=SENTIMENT_MODEL,
-            max_tokens=220,
+            max_tokens=2048,
+            output_config={"effort": "low"},
             messages=[{
                 "role": "user",
                 "content": (
@@ -403,7 +434,7 @@ def summarize_bank_report(bank_name: str, text: str) -> str | None:
                 ),
             }],
         )
-        return response.content[0].text.strip()
+        return _response_text(response) or None
     except Exception as exc:
         print(f"⚠️  riassunto non disponibile per {bank_name} ({exc})")
         return None
@@ -473,7 +504,8 @@ def fetch_sentiment(title: str) -> str | None:
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=SENTIMENT_MODEL,
-            max_tokens=5,
+            max_tokens=1024,
+            output_config={"effort": "low"},
             messages=[{
                 "role": "user",
                 "content": (
@@ -483,7 +515,7 @@ def fetch_sentiment(title: str) -> str | None:
                 ),
             }],
         )
-        text = response.content[0].text.strip().lower()
+        text = _response_text(response).lower()
         for label in ("positivo", "neutro", "negativo"):
             if label in text:
                 return label
@@ -660,6 +692,61 @@ def render_bank_card(item: dict) -> str:  # NUOVO
         </div>"""
 
 
+def render_stance_cell(view: dict | None) -> str:
+    if view is None:
+        return '<td class="stance-empty">–</td>'
+    score = view["score"]
+    tone = "positive" if score > 0 else "negative" if score < 0 else "neutral"
+    previous = view["previous"]
+    change = ""
+    if previous is not None and previous != score:
+        change = f' <span class="stance-change">{"▲" if score > previous else "▼"}</span>'
+    return f'<td><span class="stance {tone}">{score:+d}</span>{change}</td>'
+
+
+def render_views_section(consensus: dict) -> str:
+    """Tabella delle view per asset class e schede degli ultimi report analizzati."""
+    if not consensus["documents"]:
+        return ""
+    table_html = ""
+    if consensus["assets"]:
+        header = "".join(f"<th>{html.escape(bank)}</th>" for bank in consensus["banks"])
+        rows = ""
+        for asset in consensus["assets"]:
+            cells = "".join(render_stance_cell(asset["views"].get(bank)) for bank in consensus["banks"])
+            rows += f"""
+          <tr><th scope="row">{html.escape(asset['label'])}</th><td class="stance-average">{asset['average']:+.1f}</td>{cells}</tr>"""
+        table_html = f"""
+      <p class="search-hint">Da -2 (forte sottopeso) a +2 (forte sovrappeso), solo view esplicite degli ultimi {bank_views.CONSENSUS_MAX_AGE_DAYS} giorni. ▲▼ indicano il cambio rispetto alla view precedente.</p>
+      <div class="views-scroll">
+        <table class="views-table">
+          <thead><tr><th>Asset class</th><th>Media</th>{header}</tr></thead>
+          <tbody>{rows}
+          </tbody>
+        </table>
+      </div>"""
+
+    cards_html = ""
+    for doc in consensus["documents"]:
+        analysis = doc["analysis"]
+        risks = sorted(analysis["risks"], key=lambda r: r["severity"] != "high")[:3]
+        risks_html = "".join(f"<li>{html.escape(r['risk_it'])}</li>" for r in risks)
+        date = analysis.get("published_date") or doc.get("first_seen", "")
+        cards_html += f"""
+        <div class="bank-card">
+          <div class="bank-name">{html.escape(doc['bank'])} &middot; {html.escape(date)}</div>
+          <p class="bank-summary">{html.escape(analysis['summary_it'])}</p>
+          <ul class="bank-risks">{risks_html}</ul>
+          <a class="bank-link" href="{html.escape(doc['url'])}" target="_blank" rel="noopener noreferrer">PDF →</a>
+        </div>"""
+    return f"""
+    <section>
+      <h2>📊 View dei Giganti</h2>{table_html}
+      <div class="bank-grid">{cards_html}
+      </div>
+    </section>"""
+
+
 def encrypt_for_password(plaintext: str, password: str) -> dict:
     """Cifra plaintext con AES-256-GCM, chiave derivata dalla password via
     PBKDF2-HMAC-SHA256. Salt/iv/iterazioni cambiano ad ogni run. Il formato
@@ -756,6 +843,7 @@ def render_html(
     high_priority: list[dict],
     bank_reports: list[dict],  # NUOVO
     search_index: list[dict],  # NUOVO
+    consensus: dict,
 ) -> str:
     now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
     indices_html = "\n".join(render_index_card(i) for i in indices)
@@ -772,7 +860,9 @@ def render_html(
       </div>
     </section>"""
 
-    search_index_json = json.dumps(search_index, ensure_ascii=False)
+    views_html = render_views_section(consensus)
+
+    search_index_json = json.dumps(search_index, ensure_ascii=False).replace("</", "<\\/")
     search_html = f"""
     <section>
       <h2>🔍 Ricerca Giganti</h2>
@@ -821,6 +911,7 @@ def render_html(
       <div class="grid">{digital_assets_html}
       </div>
     </section>
+{views_html}
 {bank_html}
 {search_html}
 {news_sections_html}
@@ -940,6 +1031,19 @@ def render_html(
   .bank-summary {{ font-size: 0.9rem; color: var(--text); margin: 0 0 0.6rem; line-height: 1.5; }}
   .bank-link {{ font-size: 0.82rem; color: var(--accent); text-decoration: none; font-weight: 600; }}
   .bank-link:hover {{ text-decoration: underline; }}
+  .bank-risks {{ font-size: 0.82rem; color: var(--muted); margin: 0 0 0.6rem; padding-left: 1.1rem; line-height: 1.45; }}
+  .views-scroll {{ overflow-x: auto; margin-bottom: 1.2rem; }}
+  .views-table {{ width: 100%; border-collapse: collapse; font-size: 0.88rem; }}
+  .views-table th, .views-table td {{ padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--border); text-align: center; white-space: nowrap; }}
+  .views-table thead th {{ color: var(--muted); font-weight: 600; }}
+  .views-table th:first-child {{ text-align: left; font-weight: 600; }}
+  .stance {{ display: inline-block; min-width: 2rem; padding: 0.1rem 0.35rem; border-radius: 6px; font-weight: 600; }}
+  .stance.positive {{ background: var(--positive-bg); color: var(--positive-text); }}
+  .stance.negative {{ background: var(--negative-bg); color: var(--negative-text); }}
+  .stance.neutral {{ background: var(--neutral-bg); color: var(--neutral-text); }}
+  .stance-average {{ font-weight: 700; }}
+  .stance-empty {{ color: var(--muted); }}
+  .stance-change {{ font-size: 0.7rem; color: var(--muted); }}
   .news-section {{ margin-bottom: 2.4rem; }}
   .news-list {{ list-style: none; margin: 0; padding: 0; }}
   .news-list li {{
@@ -1183,7 +1287,7 @@ def main():
     print("DisciplinedCapital")
     print("-" * 40)
 
-    print("[1/7] Scarico indici di mercato, materie prime e digital asset...")
+    print("[1/9] Scarico indici di mercato, materie prime e digital asset...")
     indices = fetch_quotes(INDICES)
     commodities = fetch_quotes(COMMODITIES)
     digital_assets = fetch_quotes(DIGITAL_ASSETS)  # NUOVO
@@ -1195,42 +1299,55 @@ def main():
         f"{ok_digital_assets}/{len(digital_assets)} digital asset aggiornati"
     )
 
-    print("[2/7] Scarico notizie (feed RSS)...")
+    print("[2/9] Scarico notizie (feed RSS)...")
     news_raw = fetch_news()
     total_raw = sum(len(items) for items in news_raw.values())
     for category, items in news_raw.items():
         print(f"      {category}: {len(items)} notizie")
 
-    print("[3/7] Calendario economico (Myfxbook, solo impatto alto)...")
+    print("[3/9] Calendario economico (Myfxbook, solo impatto alto)...")
     scraped_items = fetch_scraped_news()
     if scraped_items:
         news_raw.setdefault(SCRAPED_NEWS_CATEGORY, []).extend(scraped_items)
     total_raw += len(scraped_items)
     print(f"      {len(scraped_items)} eventi ad alto impatto")
 
-    print("[4/7] Deduplico, calcolo rilevanza e sentiment...")
+    print("[4/9] Deduplico, calcolo rilevanza e sentiment...")
     news, high_priority = process_news(news_raw)
     total_news = sum(len(items) for items in news.values())
     duplicates_removed = total_raw - total_news
     print(f"      {total_news} notizie uniche ({duplicates_removed} duplicati rimossi)")
     print(f"      {len(high_priority)} notizie ad alta priorità")
 
-    print("[5/7] Giganti: scraping e riassunto operativo...")
+    print("[5/9] Giganti: scraping e riassunto operativo...")
     bank_reports = build_bank_reports()
     print(f"      {len(bank_reports)}/{len(BANK_SOURCES)} banche disponibili")
 
-    print("[6/7] Knowledge base: scraping nuovi PDF dei Giganti...")
+    print("[6/9] Knowledge base: scraping nuovi PDF dei Giganti...")
     kb_summary = knowledge_base.ingest_new_reports(BANK_SOURCES)
     total_new_docs = sum(kb_summary.values())
     search_index = knowledge_base.build_search_index()
     print(f"      {total_new_docs} nuovi documenti aggiunti, {len(search_index)} nell'indice di ricerca")
 
-    print("[7/7] Genero report e storico...")
+    print("[7/9] Analisi strutturata dei PDF...")
+    analyzed = bank_views.analyze_pending_documents()
+    view_rows = bank_views.export_views_csv()
+    consensus = bank_views.build_consensus()
+    print(f"      {analyzed} documenti analizzati, {view_rows} view nello storico")
+
+    print("[8/9] Storico prezzi e indicatori di rischio...")
+    tracked = {**INDICES, **COMMODITIES, **DIGITAL_ASSETS, **RISK_INDICATORS}
+    saved_tickers = market_history.update_price_history(tracked)
+    print(f"      {saved_tickers}/{len(tracked)} ticker aggiornati")
+
+    print("[9/9] Genero report e storico...")
     if SITE_PASSWORD:
         print("      🔒 Report protetto da password (SITE_PASSWORD impostata)")
     else:
         print("      ⚠️  SITE_PASSWORD non impostata: il report NON è protetto da password")
-    html_output = render_html(indices, commodities, digital_assets, news, high_priority, bank_reports, search_index)
+    html_output = render_html(
+        indices, commodities, digital_assets, news, high_priority, bank_reports, search_index, consensus
+    )
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(html_output, encoding="utf-8")
     txt_file, json_file = save_history(indices, commodities, digital_assets, news, high_priority, bank_reports)
