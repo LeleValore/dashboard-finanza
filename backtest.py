@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 import market_history
+from risk_rules import PROFILE
 
 DATA_DIR = Path(os.environ.get("DATA_DIR") or Path(__file__).parent)
 RESULTS_FILE = DATA_DIR / "backtest" / "results.csv"
@@ -197,11 +198,14 @@ def run_all() -> pd.DataFrame:
     returns = load_returns(prices)
     index = returns.index
     trend = trend_targets(prices["BTC-USD"], index, "W-FRI")
-    core = {ticker: weight * 0.7 for ticker, weight in CORE_WEIGHTS.items()}
-    total = pd.DataFrame({**core, "QQQ": 0.2, "BTC-USD": 0.1 * trend, "CASH": 0.1 * (1 - trend)}, index=trend.index)
+    allocation = PROFILE["allocation"]
+    growth, crypto = allocation["medio"], allocation["breve"]
+    core = {ticker: weight * allocation["lungo"] for ticker, weight in CORE_WEIGHTS.items()}
+    total = pd.DataFrame({**core, "QQQ": growth, "BTC-USD": crypto * trend, "CASH": crypto * (1 - trend)},
+                         index=trend.index)
     portfolios = {
         "Nucleo": fixed_targets(index, CORE_WEIGHTS),
-        "70/20/10 sempre investito": fixed_targets(index, {**core, "QQQ": 0.2, "BTC-USD": 0.1}),
+        "70/20/10 sempre investito": fixed_targets(index, {**core, "QQQ": growth, "BTC-USD": crypto}),
         "70/20/10 con filtro BTC": total,
     }
     rows += run_block("Portafoglio", portfolios, returns, ETF_COST)

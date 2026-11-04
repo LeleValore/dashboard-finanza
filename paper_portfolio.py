@@ -23,21 +23,21 @@ import pandas as pd
 import yfinance as yf
 
 import market_history
+from risk_rules import HISTORY_FILE, PROFILE
 
 DATA_DIR = Path(os.environ.get("DATA_DIR") or Path(__file__).parent)
 PAPER_DIR = DATA_DIR / "paper"
 STATE_FILE = PAPER_DIR / "portfolio.json"
 TRADES_FILE = PAPER_DIR / "trades.csv"
-HISTORY_FILE = PAPER_DIR / "history.csv"
 
-STARTING_CAPITAL = 1000.0
-COMMISSION_EUR = 1.0
-CRYPTO_COMMISSION = 0.0025
-REBALANCE_BAND = 0.02
+STARTING_CAPITAL = float(PROFILE["starting_capital_eur"])
+COMMISSION_EUR = PROFILE["costs"]["commission_eur"]
+CRYPTO_COMMISSION = PROFILE["costs"]["crypto_commission"]
+REBALANCE_BAND = PROFILE["costs"]["rebalance_band"]
 
-CORE_WEIGHT = 0.70
-GROWTH_WEIGHT = 0.20
-CRYPTO_WEIGHT = 0.10
+CORE_WEIGHT = PROFILE["allocation"]["lungo"]
+GROWTH_WEIGHT = PROFILE["allocation"]["medio"]
+CRYPTO_WEIGHT = PROFILE["allocation"]["breve"]
 CORE_POSITIONS = {"VWCE.DE": 0.60, "EUNH.DE": 0.25, "4GLD.DE": 0.15}
 CRYPTO_TICKER = "BTC-USD"
 BENCHMARK = "VWCE.DE"

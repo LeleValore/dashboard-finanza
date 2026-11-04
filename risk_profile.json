@@ -1,0 +1,11 @@
+{
+  "starting_capital_eur": 1000,
+  "max_drawdown": 0.25,
+  "risk_per_trade": 0.01,
+  "loss_limits": {"giornaliera": 0.03, "settimanale": 0.06, "mensile": 0.10},
+  "allocation": {"lungo": 0.70, "medio": 0.20, "breve": 0.10},
+  "max_position": {"lungo": 0.50, "medio": 0.10, "breve": 0.10},
+  "min_reward_risk": 2.0,
+  "alert_vix": 30,
+  "costs": {"commission_eur": 1.0, "crypto_commission": 0.0025, "rebalance_band": 0.02}
+}

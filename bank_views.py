@@ -196,6 +196,10 @@ def _needs_analysis(doc: dict) -> bool:
     return analysis.get("is_market_commentary") and doc.get("analysis_version", 1) < ANALYSIS_VERSION
 
 
+def count_pending_documents() -> int:
+    return sum(_needs_analysis(doc) for doc in knowledge_base.load_all_documents())
+
+
 def analyze_pending_documents() -> int:
     """Analizza i documenti non ancora elaborati, al massimo MAX_ANALYSES_PER_RUN
     per esecuzione. Senza ANTHROPIC_API_KEY non fa nulla: i documenti restano in

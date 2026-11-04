@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -21,15 +22,31 @@ PRICES_DIR = DATA_DIR / "prices"
 
 PRICE_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 MAX_WORKERS = 8
+FETCH_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 2
 
 
 def _ticker_filename(ticker: str) -> str:
     return re.sub(r"[^A-Za-z0-9.-]+", "_", ticker).strip("_") + ".csv"
 
 
+def fetch_history(ticker: str, **kwargs):
+    """Scarica lo storico riprovando: con più download in parallelo la cache di
+    yfinance può rispondere "database is locked" o restituire una serie vuota."""
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            hist = yf.Ticker(ticker).history(**kwargs)
+            if not hist.empty or attempt == FETCH_ATTEMPTS:
+                return hist
+        except Exception:
+            if attempt == FETCH_ATTEMPTS:
+                raise
+        time.sleep(RETRY_DELAY_SECONDS)
+
+
 def _save_one_ticker(name: str, ticker: str) -> bool:
     try:
-        hist = yf.Ticker(ticker).history(period="max", auto_adjust=False)
+        hist = fetch_history(ticker, period="max", auto_adjust=False)
         if hist.empty:
             print(f"⚠️  {name} ({ticker}): storico vuoto, tengo il CSV precedente")
             return False

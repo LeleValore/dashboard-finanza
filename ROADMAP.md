@@ -44,11 +44,13 @@ a essere spenta se non dimostra un vantaggio.
 
 ## Fase 1: Regole e profilo
 
-- [ ] 1.1 Profilo di rischio in un unico file di configurazione
-- [ ] 1.2 Calcolo automatico della dimensione di ogni operazione
-- [ ] 1.3 Avvisi al raggiungimento della perdita giornaliera, settimanale e mensile massima
+- [x] 1.1 Profilo di rischio in un unico file di configurazione
+- [x] 1.2 Calcolo automatico della dimensione di ogni operazione
+- [x] 1.3 Avvisi al raggiungimento della perdita giornaliera, settimanale e mensile massima
 - [ ] 1.4 Tasse italiane e commissioni reali nel backtest e nel portafoglio virtuale
 - [ ] 1.5 Ripristino del calendario economico con una fonte accessibile
+- [x] 1.6 Stato del sistema nel report: ogni fonte con il suo esito
+- [x] 1.7 Semaforo da terminale per valutare un'operazione
 
 **Controllo:** il sistema segnala in rosso un'operazione che viola una regola.
 
@@ -82,7 +84,7 @@ a essere spenta se non dimostra un vantaggio.
 
 ## Fase 5: Il tutor
 
-- [ ] 5.1 Scelta dell'interfaccia interattiva
+- [x] 5.1 Interfaccia scelta: sito privato installabile su iPhone e Mac (PWA), con server e login
 - [ ] 5.2 Scheda operazione: motivo, ingresso, stop, obiettivo, dimensione, invalidazione
 - [ ] 5.3 Controllo delle tue idee: semaforo su un'operazione prima che tu la faccia
 - [ ] 5.4 Diario delle operazioni con motivo ed emozioni

@@ -30,7 +30,6 @@ from pathlib import Path
 
 import feedparser
 import requests
-import yfinance as yf
 from bs4 import BeautifulSoup  # NUOVO: parsing HTML per scraping mirato e bank report
 from cryptography.hazmat.primitives import hashes  # NUOVO: cifratura password gate
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -41,6 +40,7 @@ import growth_screener
 import knowledge_base  # NUOVO: ingestion PDF dei Giganti per l'assistente locale
 import market_history
 import paper_portfolio
+import risk_rules
 
 # ----------------------------------------------------------------------
 # CONFIGURAZIONE — modifica qui ticker e fonti di notizie
@@ -270,7 +270,7 @@ PBKDF2_ITERATIONS = 250_000
 
 def _fetch_one_index(name: str, ticker: str) -> dict:
     try:
-        hist = yf.Ticker(ticker).history(period="5d")
+        hist = market_history.fetch_history(ticker, period="5d")
         if hist.empty or len(hist) < 2:
             print(f"⚠️  {name} ({ticker}): dati insufficienti, salto")
             return {"name": name, "ticker": ticker, "error": True}
@@ -472,11 +472,12 @@ def build_bank_reports() -> list[dict]:
         if not page:
             continue
         summary = summarize_bank_report(name, page["text"])
+        ai_summary = bool(summary)
         if not summary:
             # Senza ANTHROPIC_API_KEY (o se la chiamata fallisce): mostra comunque
             # un estratto grezzo del testo scrappato, invece di saltare la banca.
             summary = page["text"][:280].rsplit(" ", 1)[0] + "…"
-        reports.append({"bank": name, "summary": summary, "link": BANK_SOURCES[name]})
+        reports.append({"bank": name, "summary": summary, "link": BANK_SOURCES[name], "ai_summary": ai_summary})
     return reports
 
 
@@ -589,6 +590,7 @@ def save_history(
     news: dict,
     high_priority: list[dict],
     bank_reports: list[dict],  # NUOVO
+    system_status: list[dict],
 ) -> tuple[Path, Path]:
     """Salva un resoconto della run odierna in days/AAAA-MM-GG.txt e .json.
 
@@ -651,6 +653,7 @@ def save_history(
         "news": news,
         "high_priority": high_priority,
         "bank_report": bank_reports,  # NUOVO
+        "system_status": system_status,
     }
     json_path.write_text(json.dumps(json_data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
@@ -763,6 +766,55 @@ def render_views_section(consensus: dict) -> str:
       <div class="bank-grid">{cards_html}
       </div>
     </section>"""
+
+
+def coverage_check(name: str, done: int, total: int) -> dict:
+    """Verde se è arrivato tutto, giallo se in parte, rosso se non è arrivato nulla."""
+    status = "ok" if done == total else "partial" if done else "error"
+    return {"name": name, "status": status, "detail": f"{done}/{total}"}
+
+
+def build_system_status(quotes: list[dict], total_news: int, calendar_events: int, high_priority: list[dict],
+                        bank_reports: list[dict], pending_documents: int, saved_tickers: int, tracked: int,
+                        growth_rows: list[dict], paper_summary: dict | None) -> list[dict]:
+    """Lo stato di ogni fonte: un fallimento non deve mai passare inosservato."""
+    limits = risk_rules.loss_limit_breaches(risk_rules.read_history())
+    return [
+        coverage_check("Quotazioni", sum(1 for q in quotes if not q["error"]), len(quotes)),
+        {"name": "Notizie", "status": "ok" if total_news else "error", "detail": str(total_news)},
+        {"name": "Calendario economico", "status": "ok" if calendar_events else "error", "detail": str(calendar_events)},
+        coverage_check("Sentiment", sum(1 for i in high_priority if i.get("sentiment")), len(high_priority)),
+        coverage_check("Pagine dei Giganti", len(bank_reports), len(BANK_SOURCES)),
+        coverage_check("Riassunti dei Giganti", sum(1 for b in bank_reports if b["ai_summary"]), len(bank_reports)),
+        {"name": "Analisi PDF", "status": "partial" if pending_documents else "ok",
+         "detail": f"{pending_documents} in attesa"},
+        coverage_check("Storico prezzi", saved_tickers, tracked),
+        {"name": "Aziende in crescita", "status": "ok" if growth_rows else "error", "detail": str(len(growth_rows))},
+        {"name": "Portafoglio virtuale", "status": "ok" if paper_summary else "error",
+         "detail": "aggiornato" if paper_summary else "non aggiornato"},
+        {"name": "Limiti di perdita", "status": "error" if limits else "ok",
+         "detail": " ".join(limits) or "rispettati"},
+    ]
+
+
+def render_status_section(system_status: list[dict]) -> str:
+    """Riepilogo in cima al report: si apre da solo se qualcosa non funziona."""
+    tones = {"ok": ("positive", "OK"), "partial": ("neutral", "Parziale"), "error": ("negative", "Errore")}
+    problems = sum(1 for check in system_status if check["status"] != "ok")
+    rows = "".join(
+        f"<tr><th scope=\"row\">{html.escape(c['name'])}</th>"
+        f"<td><span class=\"stance {tones[c['status']][0]}\">{tones[c['status']][1]}</span></td>"
+        f"<td>{html.escape(c['detail'])}</td></tr>"
+        for c in system_status
+    )
+    title = f"⚠️ Stato del sistema: {problems} da controllare" if problems else "✅ Stato del sistema: tutto ok"
+    return f"""
+    <details class="status-panel"{' open' if problems else ''}>
+      <summary>{title}</summary>
+      <div class="views-scroll">
+        <table class="views-table"><tbody>{rows}</tbody></table>
+      </div>
+    </details>"""
 
 
 def _format_pct(value: float | None) -> str:
@@ -939,6 +991,7 @@ def render_html(
     consensus: dict,
     growth_rows: list[dict],
     paper_summary: dict | None,
+    system_status: list[dict],
 ) -> str:
     now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
     indices_html = "\n".join(render_index_card(i) for i in indices)
@@ -958,6 +1011,7 @@ def render_html(
     views_html = render_views_section(consensus)
     growth_html = render_growth_section(growth_rows, consensus["themes"])
     paper_html = render_paper_section(paper_summary)
+    status_html = render_status_section(system_status)
 
     search_index_json = json.dumps(search_index, ensure_ascii=False).replace("</", "<\\/")
     search_html = f"""
@@ -991,6 +1045,7 @@ def render_html(
       <h1>DisciplinedCapital</h1>
       <div class="updated">Aggiornato il {now}</div>
     </header>
+{status_html}
     <section>
       <h2>Indici di mercato</h2>
       <div class="grid">{indices_html}
@@ -1130,6 +1185,9 @@ def render_html(
   .bank-summary {{ font-size: 0.9rem; color: var(--text); margin: 0 0 0.6rem; line-height: 1.5; }}
   .bank-link {{ font-size: 0.82rem; color: var(--accent); text-decoration: none; font-weight: 600; }}
   .bank-link:hover {{ text-decoration: underline; }}
+  .status-panel {{ background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem 1.1rem; margin-bottom: 2rem; }}
+  .status-panel summary {{ cursor: pointer; font-weight: 600; }}
+  .status-panel .views-scroll {{ margin: 0.7rem 0 0; }}
   .bank-risks {{ font-size: 0.82rem; color: var(--muted); margin: 0 0 0.6rem; padding-left: 1.1rem; line-height: 1.45; }}
   .views-scroll {{ overflow-x: auto; margin-bottom: 1.2rem; }}
   .views-table {{ width: 100%; border-collapse: collapse; font-size: 0.88rem; }}
@@ -1451,6 +1509,11 @@ def main():
     if paper_summary:
         print(f"      valore {paper_summary['value']:.2f} €, confronto {paper_summary['benchmark']:.2f} €")
 
+    system_status = build_system_status(
+        indices + commodities + digital_assets, total_news, len(scraped_items), high_priority, bank_reports,
+        bank_views.count_pending_documents(), saved_tickers, len(tracked), growth_rows, paper_summary,
+    )
+
     print("[11/11] Genero report e storico...")
     if SITE_PASSWORD:
         print("      🔒 Report protetto da password (SITE_PASSWORD impostata)")
@@ -1458,11 +1521,13 @@ def main():
         print("      ⚠️  SITE_PASSWORD non impostata: il report NON è protetto da password")
     html_output = render_html(
         indices, commodities, digital_assets, news, high_priority, bank_reports, search_index, consensus,
-        growth_rows, paper_summary,
+        growth_rows, paper_summary, system_status,
     )
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(html_output, encoding="utf-8")
-    txt_file, json_file = save_history(indices, commodities, digital_assets, news, high_priority, bank_reports)
+    txt_file, json_file = save_history(
+        indices, commodities, digital_assets, news, high_priority, bank_reports, system_status
+    )
 
     print("-" * 40)
     print(f"Report:  {OUTPUT_FILE}")
